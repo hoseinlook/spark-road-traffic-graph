@@ -1,0 +1,45 @@
+version: '3.9'
+
+networks:
+  pipeline:
+
+services:
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    user: "${UID}:${GID}"
+    restart: on-failure
+    ports:
+      - "2181:2181"
+    volumes:
+      - "./storage/zookeeper_data:/bitnami"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    networks:
+      - pipeline
+
+  kafka-broker:
+    image: bitnami/kafka:latest
+    user: "${UID}:${GID}"
+    restart: on-failure
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - "./storage/kafka_data:/bitnami"
+    networks:
+      - pipeline
+    env_file:
+      - .env
+    environment:
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=CLIENT://:9092,EXTERNAL://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=CLIENT://kafka-broker:9092,EXTERNAL://localhost:9093
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=CLIENT
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CLIENT_USERS=${KAFKA_USERNAME}
+      - KAFKA_CLIENT_PASSWORDS=${KAFKA_PASSWORD}
+      - ALLOW_ANONYMOUS_LOGIN=yes
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+    depends_on:
+      - zookeeper

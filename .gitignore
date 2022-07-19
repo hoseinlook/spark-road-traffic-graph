@@ -1,0 +1,5 @@
+.idea
+.ipynb_checkpoints
+venv
+.DS_Store
+.env
