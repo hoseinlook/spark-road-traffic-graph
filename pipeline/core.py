@@ -1,7 +1,8 @@
+from . import config
 import os
 from abc import ABC, abstractmethod, abstractclassmethod
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, when, lit, concat_ws
+from pyspark.sql.functions import col, when, lit, concat_ws, udf, from_json, struct, to_json
 from pyspark.sql.types import StructType, StructField, StringType, DateType
 
 
@@ -19,7 +20,12 @@ class Pipeline(ABC):
 
     @property
     @abstractmethod
-    def kafka_configs(self) -> dict:
+    def kafka_read_configs(self) -> dict:
+        pass
+
+    @property
+    @abstractmethod
+    def kafka_write_configs(self) -> dict:
         pass
 
     @property
@@ -49,7 +55,9 @@ class Pipeline(ABC):
         return self._spark
 
     def extract_from_kafka(self) -> DataFrame:
-        df = self.spark.readStream.format('kafka').options(**self.kafka_configs).load()
+        df = self.spark.readStream.format('kafka').options(**self.kafka_read_configs).load()
+        df = df.withColumn("data", from_json(col("value").cast("string"), schema=self.reading_schema, options={'allowUnquotedControlChars': 'true'}).alias("data")) \
+            .select(col('key').cast("string").alias("_key"), "data.*")
         return df
 
     @abstractmethod
@@ -57,7 +65,9 @@ class Pipeline(ABC):
         pass
 
     def load_to_kafka(self, df: DataFrame):
-        df.writeStream.format('kafka').start()
+        df = df.withColumnRenamed("_key", "key")
+        df = df.withColumn("value", to_json(struct('*').dropFields("key")))
+        df.writeStream.format('kafka').options(**self.kafka_write_configs).start()
         self.spark.streams.awaitAnyTermination()
 
     def start(self):
@@ -79,21 +89,27 @@ class TehranPipeline(Pipeline):
         'spark.streaming.backpressure.enabled': 'true',
 
     }
-    topic = "tehran_locations"
+    topic = "tehran-locations"
 
-    kafka_configs = {
+    kafka_read_configs = {
+        'failOnDataLoss': 'false',
+        'startingOffsets': 'earliest',
+
         # kafka connection
-        'kafka.bootstrap.servers': os.getenv('KAFKA_SERVERS', '127.0.0.1:9092'),
-        # 'kafka.security.protocol': os.getenv('KAFKA_PROTOCOL', 'PLAINTEXT'),
-        # 'kafka.sasl.mechanism': os.getenv('KAFKA_SASL', 'PLAIN'),
-        # 'kafka.sasl.jaas.config': f'org.apache.kafka.common.security.plain.PlainLoginModule required username="{os.getenv("KAFKA_USERNAME")}" password="{os.getenv("KAFKA_PASSWORD")}";',
+        'kafka.bootstrap.servers': os.getenv('KAFKA_SERVERS', '127.0.0.1:9093'),
 
         # topic
         'subscribe': topic,
-        'groupIdPrefix': topic,
+        # 'groupIdPrefix': topic,
         # 'maxOffsetsPerTrigger': int(os.getenv('KAFKA_MAX_OFFSETS_PER_TRIGGER', 10000)),
-        'fetch.max.bytes': '104857600',
+        # 'fetch.max.bytes': '104857600',
 
+    }
+
+    kafka_write_configs = {
+        'kafka.bootstrap.servers': os.getenv('KAFKA_SERVERS', '127.0.0.1:9093'),
+        'checkpointLocation': config.PATH_CHECKPOINT,
+        "topic": f"{topic}-result"
     }
 
     reading_schema = StructType([
@@ -106,4 +122,3 @@ class TehranPipeline(Pipeline):
 
     def transform(self, df: DataFrame) -> DataFrame:
         return df
-
