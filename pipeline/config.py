@@ -12,3 +12,6 @@ PATH_CHECKPOINT = PATH_STORAGE.joinpath('checkpoint')
 
 if not PATH_CHECKPOINT.exists():
     PATH_CHECKPOINT.mkdir(parents=True, exist_ok=True)
+
+# kafka
+KAFKA_SERVERS = os.getenv('KAFKA_SERVERS', '127.0.0.1:9093')

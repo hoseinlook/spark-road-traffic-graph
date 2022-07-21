@@ -105,7 +105,7 @@ class TehranPipeline(Pipeline):
         'startingOffsets': 'earliest',
 
         # kafka connection
-        'kafka.bootstrap.servers': os.getenv('KAFKA_SERVERS', '127.0.0.1:9093'),
+        'kafka.bootstrap.servers': config.KAFKA_SERVERS,
 
         # topic
         'subscribe': topic,
@@ -114,7 +114,7 @@ class TehranPipeline(Pipeline):
     }
 
     kafka_write_configs = {
-        'kafka.bootstrap.servers': os.getenv('KAFKA_SERVERS', '127.0.0.1:9093'),
+        'kafka.bootstrap.servers': config.KAFKA_SERVERS,
         'checkpointLocation': config.PATH_CHECKPOINT,
         "topic": f"{topic}-result"
     }
