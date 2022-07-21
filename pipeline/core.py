@@ -1,9 +1,13 @@
-from . import config
+import hashlib
 import os
-from abc import ABC, abstractmethod, abstractclassmethod
+from . import config
+from pyspark.sql.pandas.functions import pandas_udf
+from abc import ABC, abstractmethod
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, when, lit, concat_ws, udf, from_json, struct, to_json
-from pyspark.sql.types import StructType, StructField, StringType, DateType
+from pyspark.sql.functions import col, lit, udf, from_json, struct, to_json, window, collect_list, hour, dayofweek, concat, explode, max
+from pyspark.sql.types import StructType, StructField, StringType, DateType, FloatType, ArrayType, MapType, IntegerType
+import pandas as pd
+from .points import TEHRAN_POINTS, Point
 
 
 class Pipeline(ABC):
@@ -64,10 +68,14 @@ class Pipeline(ABC):
     def transform(self, df: DataFrame) -> DataFrame:
         pass
 
+    def generate_output_key(self, df: DataFrame) -> DataFrame:
+        return df
+
     def load_to_kafka(self, df: DataFrame):
         df = df.withColumnRenamed("_key", "key")
         df = df.withColumn("value", to_json(struct('*').dropFields("key")))
-        df.writeStream.format('kafka').options(**self.kafka_write_configs).start()
+        df = self.generate_output_key(df)
+        df.writeStream.format('kafka').outputMode("update").options(**self.kafka_write_configs).start()
         self.spark.streams.awaitAnyTermination()
 
     def start(self):
@@ -92,6 +100,7 @@ class TehranPipeline(Pipeline):
     topic = "tehran-locations"
 
     kafka_read_configs = {
+        # read policy
         'failOnDataLoss': 'false',
         'startingOffsets': 'earliest',
 
@@ -100,9 +109,7 @@ class TehranPipeline(Pipeline):
 
         # topic
         'subscribe': topic,
-        # 'groupIdPrefix': topic,
-        # 'maxOffsetsPerTrigger': int(os.getenv('KAFKA_MAX_OFFSETS_PER_TRIGGER', 10000)),
-        # 'fetch.max.bytes': '104857600',
+        'maxOffsetsPerTrigger': int(os.getenv('KAFKA_MAX_OFFSETS_PER_TRIGGER', 200)),
 
     }
 
@@ -114,11 +121,55 @@ class TehranPipeline(Pipeline):
 
     reading_schema = StructType([
         StructField("driverId", StringType()),
-        StructField("lat", StringType()),
-        StructField("long", StringType()),
+        StructField("lat", FloatType()),
+        StructField("long", FloatType()),
         StructField("time", DateType()),
 
     ])
 
     def transform(self, df: DataFrame) -> DataFrame:
+        df = df.withColumn("assigned_point", self.assign_closet_point(col("lat"), col('long'))). \
+            withColumn("dayOfWeek_Hour", concat(dayofweek(col("time")), lit("_"), hour(col("time")))). \
+            groupBy("driverId", "dayOfWeek_Hour").agg(collect_list(col("assigned_point")).alias("assigned_point"), max(col("time").cast("timestamp")).alias("last_time")).withWatermark("last_time", "2 hours")
+
+        df = df.withColumn("Y", self.generate_graph_edges(col("assigned_point")))
+        df = df.withColumn("u", explode(col("Y"))).select("driverId", "dayOfWeek_Hour", "u.*")
+        # df = df.groupBy("dayOfWeek_Hour", "p1", "p2").agg(avg(col("edge").alias("edge_on_avg")))
+
         return df
+
+    @staticmethod
+    @pandas_udf(StringType(), None)
+    def assign_closet_point(lat_series: pd.Series, long_series: pd.Series) -> pd.Series:
+        df = pd.DataFrame({"lat": lat_series, "long": long_series})
+        return df.apply(lambda item: min(TEHRAN_POINTS, key=lambda p: Point.distance(p, Point(item["lat"], item["long"], ''))).label, axis=1)
+
+    # MapType(keyType=StringType(), valueType=Union[StringType(), IntegerType()]))
+    @staticmethod
+    @udf(returnType=ArrayType(
+        StructType([
+            StructField("p1", StringType()),
+            StructField("p2", StringType()),
+            StructField("edge", IntegerType()),
+        ])))
+    def generate_graph_edges(list_of_point_labels: list):
+        weights = {label: list_of_point_labels.count(label) for label in set(list_of_point_labels)}
+        result = []
+        last_point = list_of_point_labels[0]
+
+        for p in list_of_point_labels[1:]:
+            if p != last_point:
+                result.append({"p1": last_point, "p2": p, "edge": weights[last_point]})
+                last_point = p
+
+        return result
+
+    def generate_output_key(self, df: DataFrame) -> DataFrame:
+        @pandas_udf(StringType(), None)
+        def unique_md5_key(dayOfWeek_Hour_series: pd.Series, p1_series: pd.Series, p2_series: pd.Series) -> pd.Series:
+            df = pd.DataFrame({"dayOfWeek_Hour_series": dayOfWeek_Hour_series, "p1_series": p1_series, "p2_series": p2_series})
+            df["key"] = df["dayOfWeek_Hour_series"] + df["p1_series"] + df["p2_series"]
+            df["key"] = df["key"].apply(lambda x: hashlib.md5(x.encode()).hexdigest())
+            return df["key"]
+
+        return df.withColumn('key', unique_md5_key(col("dayOfWeek_Hour"), col("p1"), col('p2')))
