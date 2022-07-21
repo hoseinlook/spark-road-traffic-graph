@@ -1,1 +1,7 @@
-python-dotenv
+python-dotenv==0.20.0
+kafka-python==2.0.2
+pyspark==3.3.0
+pyarrow==8.0.0
+numpy==1.23.1
+pandas==1.4.3
+jupyter
