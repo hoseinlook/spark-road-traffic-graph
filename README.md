@@ -8,6 +8,10 @@ its huge data so to solve this problem we divide city to 10000 points
 and assign closet point to every record with its location and calculate
 weight between points with spark aggregation and produce result to kafka
 
+example tehran which is  divided to points 
+![tehran example](./readme_files/tehran_points_example.png)
+
+
 # Install
 
 ```bash
